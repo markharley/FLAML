@@ -107,6 +107,7 @@ def test_numpy():
         time_budget=3,  # time budget in seconds
         log_file_name="test/ts_forecast.log",
         n_splits=3,  # number of splits
+        eval_method='cv',
     )
     print(automl.predict(X_train[72:]))
 

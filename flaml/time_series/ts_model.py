@@ -550,6 +550,7 @@ class TS_SKLearn(TimeSeriesEstimator):
             self._model = model
 
     def fit(self, X_train, y_train=None, budget=None, **kwargs):
+        self.time_col = kwargs.pop("time_col", "ds")  # Doesn't work for some reason
         X_train = enrich(X_train, self.params["monthly_fourier_degree"], self.time_col)
         current_time = time.time()
         if isinstance(X_train, TimeSeriesDataset):

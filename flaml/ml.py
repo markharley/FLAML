@@ -490,7 +490,8 @@ def evaluate_model_CV(
         kf = kf.split(X_train_split, y_train_split, groups)
         shuffle = False
     elif isinstance(kf, TimeSeriesSplit):
-        kf = kf.split(X_train_split, y_train_split)
+        ts_data = X_train_all
+        kf = kf.split(ts_data.X_train, ts_data.y_train)
     else:
         kf = kf.split(X_train_split)
     rng = np.random.RandomState(2020)
@@ -507,20 +508,34 @@ def evaluate_model_CV(
         if isinstance(X_train_all, pd.DataFrame):
             X_train = X_train_split.iloc[train_index]
             X_val = X_train_split.iloc[val_index]
+        elif isinstance(X_train_all, TimeSeriesDataset):
+            ts_data = X_train_all
+            X_train, X_val = ts_data.X_train.iloc[train_index], ts_data.X_train.iloc[val_index]
         else:
             X_train, X_val = X_train_split[train_index], X_train_split[val_index]
-        y_train, y_val = y_train_split[train_index], y_train_split[val_index]
+
+        if isinstance(X_train_all, TimeSeriesDataset):
+            ts_data = X_train_all
+            y_train, y_val = ts_data.y_train.iloc[train_index], ts_data.y_train.iloc[val_index]
+        else:
+            y_train, y_val = y_train_split[train_index], y_train_split[val_index]
+
         estimator.cleanup()
         if weight is not None:
             fit_kwargs["sample_weight"], weight_val = (
                 weight[train_index],
                 weight[val_index],
             )
+
         if groups is not None:
             fit_kwargs["groups"] = groups[train_index]
             groups_val = groups[val_index]
         else:
             groups_val = None
+
+        if isinstance(X_train_all, TimeSeriesDataset):
+            fit_kwargs["time_col"] = X_train_all.time_col
+
         val_loss_i, metric_i, train_time_i, pred_time_i = get_val_loss(
             config,
             estimator,

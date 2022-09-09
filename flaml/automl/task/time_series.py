@@ -28,8 +28,6 @@ from flaml.time_series import (
 logger = logging.getLogger(__name__)
 
 
-# class AutoMLTS(AutoML):
-#     """AutoML for Time Series"""
 class TaskTS(Task):
     estimators = {
         "xgboost": XGBoost_TS,
@@ -50,6 +48,7 @@ class TaskTS(Task):
         y_train_all,
         dataframe,
         label,
+        eval_method,
         time_col=None,
         X_val=None,
         y_val=None,
@@ -68,6 +67,7 @@ class TaskTS(Task):
         automl._df = True
 
         if X_train_all is not None and y_train_all is not None:
+            time_col = time_col or "ds"
             validate_data_basic(X_train_all, y_train_all)
             dataframe = normalize_ts_data(
                 X_train_all, y_train_all, target_names, time_col
@@ -157,8 +157,6 @@ class TaskTS(Task):
 
         automl._state.kf = None
         automl._sample_weight_full = None
-        if eval_method != "holdout":
-            raise NotImplementedError("Cross-validation implementation pending")
 
         SHUFFLE_SPLIT_TYPES = ["uniform", "stratified"]
         if automl._split_type in SHUFFLE_SPLIT_TYPES:
@@ -171,7 +169,11 @@ class TaskTS(Task):
         automl._state.groups_val = None
 
         ts_data = automl._state.X_val
-        no_test_data = ts_data.test_data is None or len(ts_data.test_data) == 0
+        no_test_data = (
+            ts_data is None
+            or ts_data.test_data is None
+            or len(ts_data.test_data) == 0
+        )
         if no_test_data and eval_method == "holdout":
             # if eval_method = holdout, make holdout data
             num_samples = ts_data.train_data.shape[0]
@@ -187,7 +189,8 @@ class TaskTS(Task):
                 "period"
             ]  # NOTE: _prepare_data is before kwargs is updated to fit_kwargs_by_estimator
 
-            if period * (n_splits + 1) > y_train_all.size:
+            ts_data = automl._state.X_train
+            if period * (n_splits + 1) > ts_data.y_train.size:
                 n_splits = int(y_train_all.size / period - 1)
                 assert n_splits >= 2, (
                     f"cross validation for forecasting period={period}"

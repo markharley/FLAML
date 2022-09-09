@@ -69,6 +69,10 @@ class TimeSeriesDataset:
     def regressors(self):
         return self.time_varying_known_categoricals + self.time_varying_known_reals
 
+    def _X(self, df: pd.DataFrame):
+        features = [col for col in df.columns if col not in self.target_names]
+        return df[features]
+
     def _y(self, df: pd.DataFrame):
         if len(self.target_names) > 1:
             return df[self.target_names]
@@ -77,6 +81,14 @@ class TimeSeriesDataset:
             if out.dtype == object:
                 out = out.astype(str)
             return out
+
+    @property
+    def X_train(self):
+        return self._X(self.train_data)
+
+    @property
+    def X_val(self):
+        return self._X(self.test_data)
 
     @property
     def y_train(self):
@@ -276,6 +288,8 @@ def enrich(
 def enrich_dataframe(
     df: pd.DataFrame, time_col: str, fourier_degree: int
 ) -> pd.DataFrame:
+    if isinstance(df, int):
+        return df
     extras = naive_date_features(df[time_col], fourier_degree)
     extras.columns = [f"{time_col}_{c}" for c in extras.columns]
     extras.index = df.index
@@ -556,6 +570,12 @@ class DataTransformerTS:
             X: Processed numpy array or pandas dataframe of training data.
         """
         X = X.copy()
+        if isinstance(X, np.ndarray):
+            array_order = len(X.shape)
+            feature_labels = []
+            if array_order > 1:
+                feature_labels = [f"x{i}" for i in range(X.shape[1] - 1)]
+            X = pd.DataFrame(X, columns=[self.time_col] + feature_labels)
 
         if isinstance(X, DataFrame):
             cat_columns, num_columns, datetime_columns = (
