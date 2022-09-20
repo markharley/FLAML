@@ -242,11 +242,11 @@ class Prophet(TimeSeriesEstimator):
 
         if isinstance(X, TimeSeriesDataset):
             data = X
-            X = data.test_data[data.regressors + [data.time_col]].rename(
-                columns={data.time_col: "ds"}
-            )
+            X = data.test_data[data.regressors + [data.time_col]]
 
+        X = X.rename(columns={self.time_col: "ds"})
         if self._model is not None:
+
             X = self._preprocess(X)
             forecast = self._model.predict(X, **kwargs)
             out = forecast["yhat"]
