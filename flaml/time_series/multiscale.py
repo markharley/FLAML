@@ -1,6 +1,6 @@
 import math
 import copy
-from typing import Union, Callable
+from typing import Union, Callable, Optional
 
 
 import numpy as np
@@ -178,73 +178,64 @@ class ScaleTransform:
 class MultiscaleModel(TimeSeriesEstimator):
     def __init__(
         self,
-        model_lo: Union[dict, TimeSeriesEstimator],
-        model_hi: Union[dict, TimeSeriesEstimator],
+        model_lo: Optional[TimeSeriesEstimator] = None,
+        model_hi: Optional[TimeSeriesEstimator] = None,
         scale: int = None,
         task: Union[Task, str] = "ts_forecast",
         **params
     ):
+
         super().__init__(task=task, **params)
 
-        self.model_lo = (
-            model_lo
-            if isinstance(model_lo, TimeSeriesEstimator)
-            else self._init_submodel(copy.copy(model_lo))
-        )
-        self.model_hi = (
-            model_hi
-            if isinstance(model_hi, TimeSeriesEstimator)
-            else self._init_submodel(copy.copy(model_hi))
-        )
+        self.model_lo = model_lo
+        self.model_hi = model_hi
         self.scale = scale
         self.scale_transform: ScaleTransform = None
-
-    def _init_submodel(self, config: dict):
-        est_name = config.pop("estimator")
-        est_class = self._task.estimator_class_from_str(est_name)
-        return est_class(task=self._task, **config, **self.params)
 
     @classmethod
     def _search_space(
         cls, data: TimeSeriesDataset, task: Task, pred_horizon: int, **params
     ):
-        estimators = {
-            "model_lo": ["arima", "sarimax"],
-            "model_hi": ["arima", "sarimax"],
-        }
-        out = {}
-        for mdl, ests in estimators.items():
-            est_cfgs = []
-            for est in ests:
-                est_class = task.estimator_class_from_str(est)
-                this_sp_ = est_class._search_space(
-                    data=data, task=task, pred_horizon=pred_horizon
-                )
-                # rename these parameters so there is no name clash between
-                # model_hi and model_lo
-
-                this_sp = this_sp_  # {f"{mdl}:{key}": value for key, value in this_sp_.items()}
-                this_sp["estimator"] = est
-                est_cfgs.append(this_sp)
-            # Use list as proxy for tune.choice in this strange API
-            out[mdl] = {
-                "domain": est_cfgs,
-                "init_value": est_cfgs[0],
-                "low_cost_init_value": est_cfgs[0],
-            }
-        return out
+        return {}
 
     def fit(self, X_train: TimeSeriesDataset, y_train=None, budget=None, **kwargs):
+        from flaml import AutoML
+
         super().fit(X_train)
         if self.scale is None:
             self.scale = X_train.next_scale()
         self.scale_transform = ScaleTransform(self.scale)
         X_lo, X_hi = self.scale_transform.fit_transform(X_train)
+
         loargs = copy.deepcopy(kwargs)
         if "period" in loargs:
-            loargs["period"] = math.ceil(loargs["period"] / self.scale)
-        self.model_lo.fit(X_lo, **loargs)
-        self.model_hi.fit(X_hi, **kwargs)
+            loargs["period"] = len(X_lo.test_data) or math.ceil(
+                loargs["period"] / self.scale
+            )
+
+        if budget is None:
+            budget = 120
+
+        # TODO: get metric and eval_method from parent
+        if self.model_hi is None:
+            self.model_hi = AutoML(
+                time_budget=int(budget / 2),
+                metric="mape",
+                task="ts_forecast",
+                eval_method="holdout",
+            )
+
+        if self.model_lo is None:
+            self.model_lo = AutoML(
+                time_budget=int(budget / 2),
+                metric="mape",
+                task=self._task,
+                eval_method="holdout",
+            )
+        print("training model_lo...")
+        self.model_lo.fit(X_train=X_lo, **loargs)
+        print("training model_hi...")
+        self.model_hi.fit(X_train=X_hi, **kwargs)
 
     def predict(self, X: Union[TimeSeriesDataset, pd.DataFrame]):
         # X has all the known past in train_data, genuine future in test_data

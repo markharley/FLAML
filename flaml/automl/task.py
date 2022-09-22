@@ -63,10 +63,13 @@ class Task(ABC):
         y_train: Union[np.ndarray, pd.DataFrame, pd.Series],
     ):
         self.name = task_name
-        if X_train is not None:
+        if isinstance(X_train, np.ndarray) or isinstance(X_train, pd.DataFrame):
             self.train_data_size = X_train.shape[0]
         else:
-            self.train_data_size = None
+            try:
+                self.train_data_size = X_train.train_data.shape[0]
+            except:
+                self.train_data_size = None
 
     @abstractmethod
     def evaluate_model_CV(

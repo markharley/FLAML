@@ -61,91 +61,101 @@ class TaskTS(Task):
         y_train_all,
         dataframe,
         label,
-        eval_method,
+        # eval_method,
         time_col=None,
         X_val=None,
         y_val=None,
         groups_val=None,
         groups=None,
     ):
-        if label is None:
-            label = "y"  # Prophet convention
-
-        if isinstance(label, str):
-            target_names = [label]
+        if isinstance(X_train_all, TimeSeriesDataset):
+            # in this case, we're most likely being called by another FLAML instance
+            # so all the preliminary cleaning has already been done
+            data = X_train_all
+            automl._transformer = None
+            automl._label_transformer = None
+            automl.task.time_col = X_train_all.time_col
+            automl.task.target_names = X_train_all.target_names
         else:
-            target_names = label
+            if label is None:
+                label = "y"  # Prophet convention
 
-        automl.task.time_col = time_col
-        automl.task.target_names = target_names
+            if isinstance(label, str):
+                target_names = [label]
+            else:
+                target_names = label
 
-        # we will cast any X to a dataframe,
-        automl._df = True
+            automl.task.time_col = time_col
+            automl.task.target_names = target_names
 
-        if X_train_all is not None and y_train_all is not None:
-            time_col = time_col or "ds"
-            validate_data_basic(X_train_all, y_train_all)
-            dataframe = normalize_ts_data(
-                X_train_all, target_names, time_col, y_train_all
+            # we will cast any X to a dataframe,
+            automl._df = True
+
+            if X_train_all is not None and y_train_all is not None:
+                time_col = time_col or "ds"
+                validate_data_basic(X_train_all, y_train_all)
+                dataframe = normalize_ts_data(
+                    X_train_all, target_names, time_col, y_train_all
+                )
+
+            elif dataframe is not None:
+                assert label is not None, "A label or list of labels must be provided."
+                assert isinstance(
+                    dataframe, pd.DataFrame
+                ), "dataframe must be a pandas DataFrame"
+                assert (
+                    label in dataframe.columns
+                ), "label must a column name in dataframe"
+            else:
+                raise ValueError(
+                    "Must supply either X_train_all and y_train_all, or dataframe and label"
+                )
+
+            assert (
+                dataframe.dtypes[time_col].name == "datetime64[ns]"
+            ), f"For '{TS_FORECAST}' task, time_col must contain timestamp values."
+
+            dataframe = remove_ts_duplicates(dataframe, time_col)
+            X = dataframe.drop(columns=target_names)
+            automl._nrow, automl._ndim = X.shape
+
+            # transform them all together to guarantee consistency
+            if X_val is not None and y_val is not None:
+                validate_data_basic(X_val, y_val)
+                val_df = normalize_ts_data(X_val, y_val, target_names, time_col)
+                all_df = pd.concat([dataframe, val_df], axis=0)
+                val_len = len(val_df)
+            else:
+                all_df = dataframe
+                val_len = 0
+
+            automl._transformer = DataTransformerTS(time_col, label)
+            Xt, yt = automl._transformer.fit_transform(
+                all_df.drop(columns=target_names), all_df[target_names]
+            )
+            df_t = pd.concat([Xt, yt], axis=1)
+
+            if val_len == 0:
+                df_train, df_val = df_t, None
+            else:
+                df_train, df_val = df_t[:-val_len], df_t[-val_len:]
+
+            automl._X_train_all, automl._y_train_all = Xt, yt
+
+            automl._label_transformer = automl._transformer.label_transformer
+
+            automl._feature_names_in_ = (
+                automl._X_train_all.columns.to_list()
+                if hasattr(automl._X_train_all, "columns")
+                else None
             )
 
-        elif dataframe is not None:
-            assert label is not None, "A label or list of labels must be provided."
-            assert isinstance(
-                dataframe, pd.DataFrame
-            ), "dataframe must be a pandas DataFrame"
-            assert label in dataframe.columns, "label must a column name in dataframe"
-        else:
-            raise ValueError(
-                "Must supply either X_train_all and y_train_all, or dataframe and label"
+            data = TimeSeriesDataset(
+                train_data=df_train,
+                time_col=time_col,
+                target_names=target_names,
+                test_data=df_val,
             )
-
-        assert (
-            dataframe.dtypes[time_col].name == "datetime64[ns]"
-        ), f"For '{TS_FORECAST}' task, time_col must contain timestamp values."
-
-        dataframe = remove_ts_duplicates(dataframe, time_col)
-        X = dataframe.drop(columns=target_names)
-        automl._nrow, automl._ndim = X.shape
-
-        # transform them all together to guarantee consistency
-        if X_val is not None and y_val is not None:
-            validate_data_basic(X_val, y_val)
-            val_df = normalize_ts_data(X_val, y_val, target_names, time_col)
-            all_df = pd.concat([dataframe, val_df], axis=0)
-            val_len = len(val_df)
-        else:
-            all_df = dataframe
-            val_len = 0
-
-        automl._transformer = DataTransformerTS(time_col, label)
-        Xt, yt = automl._transformer.fit_transform(
-            all_df.drop(columns=target_names), all_df[target_names]
-        )
-        df_t = pd.concat([Xt, yt], axis=1)
-
-        if val_len == 0:
-            df_train, df_val = df_t, None
-        else:
-            df_train, df_val = df_t[:-val_len], df_t[-val_len:]
-
-        automl._X_train_all, automl._y_train_all = Xt, yt
-
-        automl._label_transformer = automl._transformer.label_transformer
-
-        automl._feature_names_in_ = (
-            automl._X_train_all.columns.to_list()
-            if hasattr(automl._X_train_all, "columns")
-            else None
-        )
-        # NOTE: _validate_data is before kwargs is updated to fit_kwargs_by_estimator
-
-        data = TimeSeriesDataset(
-            train_data=df_train,
-            time_col=time_col,
-            target_names=target_names,
-            test_data=df_val,
-        )
 
         automl._state.X_val = data
         automl._state.X_train = data

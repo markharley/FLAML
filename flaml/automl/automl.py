@@ -35,7 +35,7 @@ from flaml.automl.task import (
     TS_FORECAST,
 )
 
-from flaml.automl.factory import task_factory
+from flaml.automl.factory import task_factory, Task
 
 from .. import tune
 from ..training_log import training_log_reader, training_log_writer
@@ -1513,7 +1513,9 @@ class AutoML(BaseEstimator):
                     batch_size: int, default = 64 | Batch size for training model, only
                         used by TemporalFusionTransformerEstimator.
         """
-        # Is it in kwargs?
+        # This first section just deals with ingesting data and beating it into the right shape
+        if isinstance(X_train, TimeSeriesDataset):
+            pass
 
         if isinstance(y_train, pd.DataFrame):
             if len(y_train.columns) == 1:
@@ -1525,23 +1527,90 @@ class AutoML(BaseEstimator):
             if isinstance(y_train, pd.Series):
                 label = y_train.name
 
-        task_name = task or self._settings["task"]
+        # TODO: replace with an isinstance
+        task = task or self._settings["task"]
+
         self.task = task_factory(
-            task_name,
+            task,
             X_train if X_train is not None else dataframe.drop(columns=[label]),
-            y_train if y_train is not None else dataframe[label],
+            y_train
+            if y_train is not None
+            else (
+                X_train.y_train
+                if isinstance(X_train, TimeSeriesDataset)
+                else dataframe[label]
+            ),
         )
-        task = self.task
+
+        # task = self.task
         self._state.task = self.task
 
         # TODO: remove duplicate task at self and self._state
         # self.__dict__.pop("task")  # cleanup
         self._state._start_time_flag = self._start_time_flag = time.time()
         # task = self._state.task.name  # task or self._settings.get("task")
-        self._estimator_type = "classifier" if task in CLASSIFICATION else "regressor"
+        self._estimator_type = (
+            "classifier" if self.task in CLASSIFICATION else "regressor"
+        )
         time_budget = time_budget or self._settings.get("time_budget")
         n_jobs = n_jobs or self._settings.get("n_jobs")
         gpu_per_trial = fit_kwargs.get("gpu_per_trial", 0)
+
+        self._state.n_jobs = n_jobs
+        n_concurrent_trials = n_concurrent_trials or self._settings.get(
+            "n_concurrent_trials"
+        )
+        self._n_concurrent_trials = n_concurrent_trials
+        self._early_stop = early_stop
+
+        use_ray = self._settings.get("use_ray") if use_ray is None else use_ray
+        self._use_ray = use_ray or n_concurrent_trials > 1
+        # use the following condition if we have an estimation of average_trial_time and average_trial_overhead
+        # self._use_ray = use_ray or n_concurrent_trials > ( average_trail_time + average_trial_overhead) / (average_trial_time)
+        if self._use_ray is not False:
+            import ray
+
+            n_cpus = (
+                ray.is_initialized()
+                and ray.available_resources()["CPU"]
+                or os.cpu_count()
+            )
+
+            self._state.resources_per_trial = (
+                # when using gpu, default cpu is 1 per job; otherwise, default cpu is n_cpus / n_concurrent_trials
+                (
+                    {
+                        "cpu": max(int((n_cpus - 2) / 2 / n_concurrent_trials), 1),
+                        "gpu": gpu_per_trial,
+                    }
+                    if gpu_per_trial == 0
+                    else {"cpu": 1, "gpu": gpu_per_trial}
+                )
+                if n_jobs < 0
+                else {"cpu": n_jobs, "gpu": gpu_per_trial}
+            )
+
+            if isinstance(X_train, ray.ObjectRef):
+                X_train = ray.get(X_train)
+            elif isinstance(dataframe, ray.ObjectRef):
+                dataframe = ray.get(dataframe)
+
+        self._state.weight_val = sample_weight_val
+
+        self.task._validate_data(
+            self,
+            X_train,
+            y_train,
+            dataframe,
+            label,
+            # eval_method,
+            time_col if time_col is not None else "ds",
+            X_val,
+            y_val,
+            groups_val,
+            groups,
+        )
+
         eval_method = eval_method or self._settings.get("eval_method")
         split_ratio = split_ratio or self._settings.get("split_ratio")
         n_splits = n_splits or self._settings.get("n_splits")
@@ -1589,9 +1658,7 @@ class AutoML(BaseEstimator):
         no_starting_points = starting_points is None
         if no_starting_points:
             starting_points = self._settings.get("starting_points")
-        n_concurrent_trials = n_concurrent_trials or self._settings.get(
-            "n_concurrent_trials"
-        )
+
         keep_search_state = (
             self._settings.get("keep_search_state")
             if keep_search_state is None
@@ -1611,40 +1678,6 @@ class AutoML(BaseEstimator):
             self._settings.get("append_log") if append_log is None else append_log
         )
         min_sample_size = min_sample_size or self._settings.get("min_sample_size")
-        use_ray = self._settings.get("use_ray") if use_ray is None else use_ray
-        self._state.n_jobs = n_jobs
-        self._n_concurrent_trials = n_concurrent_trials
-        self._early_stop = early_stop
-        self._use_ray = use_ray or n_concurrent_trials > 1
-        # use the following condition if we have an estimation of average_trial_time and average_trial_overhead
-        # self._use_ray = use_ray or n_concurrent_trials > ( average_trail_time + average_trial_overhead) / (average_trial_time)
-        if self._use_ray is not False:
-            import ray
-
-            n_cpus = (
-                ray.is_initialized()
-                and ray.available_resources()["CPU"]
-                or os.cpu_count()
-            )
-
-            self._state.resources_per_trial = (
-                # when using gpu, default cpu is 1 per job; otherwise, default cpu is n_cpus / n_concurrent_trials
-                (
-                    {
-                        "cpu": max(int((n_cpus - 2) / 2 / n_concurrent_trials), 1),
-                        "gpu": gpu_per_trial,
-                    }
-                    if gpu_per_trial == 0
-                    else {"cpu": 1, "gpu": gpu_per_trial}
-                )
-                if n_jobs < 0
-                else {"cpu": n_jobs, "gpu": gpu_per_trial}
-            )
-
-            if isinstance(X_train, ray.ObjectRef):
-                X_train = ray.get(X_train)
-            elif isinstance(dataframe, ray.ObjectRef):
-                dataframe = ray.get(dataframe)
 
         self._state.log_training_metric = log_training_metric
 
@@ -1661,21 +1694,7 @@ class AutoML(BaseEstimator):
         self._state.fit_kwargs_by_estimator = (
             fit_kwargs_by_estimator.copy()
         )  # shallow copy of fit_kwargs_by_estimator
-        self._state.weight_val = sample_weight_val
 
-        self.task._validate_data(
-            self,
-            X_train,
-            y_train,
-            dataframe,
-            label,
-            eval_method,
-            time_col if time_col is not None else "ds",
-            X_val,
-            y_val,
-            groups_val,
-            groups,
-        )
         self._search_states = {}  # key: estimator name; value: SearchState
         self._random = np.random.RandomState(RANDOM_SEED)
         self._seed = seed if seed is not None else 20
@@ -1688,7 +1707,7 @@ class AutoML(BaseEstimator):
             _ch = logging.StreamHandler()
             _ch.setFormatter(logger_formatter)
             logger.addHandler(_ch)
-        logger.info(f"task = {task.name}")
+        logger.info(f"task = {self.task.name}")
         self.task._decide_split_type(self, split_type)
         logger.info(f"Data split method: {self._split_type}")
         eval_method = self._decide_eval_method(eval_method, time_budget)
@@ -1751,7 +1770,7 @@ class AutoML(BaseEstimator):
                 (
                     k,
                     sample
-                    and task != "rank"
+                    and self.task != "rank"
                     and eval_method != "cv"
                     and (
                         self._min_sample_size[k] * SAMPLE_MULTIPLY_FACTOR
@@ -1763,7 +1782,7 @@ class AutoML(BaseEstimator):
         else:
             self._sample = (
                 sample
-                and task != "rank"
+                and self.task != "rank"
                 and eval_method != "cv"
                 and (
                     self._min_sample_size * SAMPLE_MULTIPLY_FACTOR
@@ -1776,13 +1795,13 @@ class AutoML(BaseEstimator):
                 from ..nlp.utils import load_default_huggingface_metric_for_task
 
                 metric = load_default_huggingface_metric_for_task(task)
-            elif task == "binary":
+            elif self.task == "binary":
                 metric = "roc_auc"
-            elif task == "multiclass":
+            elif self.task == "multiclass":
                 metric = "log_loss"
-            elif task in TS_FORECAST:
+            elif self.task in TS_FORECAST:
                 metric = "mape"
-            elif task == "rank":
+            elif self.task == "rank":
                 metric = "ndcg"
             else:
                 metric = "r2"
@@ -1815,7 +1834,7 @@ class AutoML(BaseEstimator):
             return False, None
 
         if isinstance(metric, str):
-            is_reverse, reverse_metric = is_to_reverse_metric(metric, task)
+            is_reverse, reverse_metric = is_to_reverse_metric(metric, self.task)
             if is_reverse:
                 error_metric = reverse_metric
             else:
@@ -1983,7 +2002,12 @@ class AutoML(BaseEstimator):
 
         if not keep_search_state:
             # release space
-            del self._X_train_all, self._y_train_all, self._state.kf
+            if hasattr(self, "_X_train_all"):
+                del self._X_train_all
+            if hasattr(self, "_y_train_all"):
+                del self._y_train_all
+            del self._state.kf
+
             del self._state.X_train, self._state.X_train_all, self._state.X_val
             del self._state.y_train, self._state.y_train_all, self._state.y_val
             del (

@@ -459,65 +459,68 @@ def test_features():
     _ = naive_date_features_with_holidays(y, 3)
 
 
-# def test_finance_df():
-#     df = (
-#         pd.read_csv("fincrime_finance_series.csv")
-#         .fillna(0.0)
-#         .drop(columns=["CASE_DAY"])
-#     )
-#     df["PERIOD"] = pd.to_datetime(df["PERIOD"])
-#
-#     def split_by_date(df: pd.DataFrame, dt: datetime.date):
-#         dt = datetime.datetime(dt.year, dt.month, dt.day)
-#         return df[df.PERIOD <= dt], df[df.PERIOD > dt]
-#
-#     horizon = 30
-#     data_end = datetime.date(2022, 8, 31)
-#     train_end = data_end - datetime.timedelta(days=horizon)
-#
-#     train_df, val_df = split_by_date(df, train_end)
-#     from flaml import AutoML
-#
-#     tgt = "SERIES_FRAUD"
-#     time_col = "PERIOD"
-#     assert tgt in train_df.columns
-#
-#     features = [c for c in train_df.columns if "SERIES" not in c and c != time_col]
-#
-#     for estimator_list in [
-#         # ["arima", "sarimax"],
-#         # ["xgboost", "xgb_limitdepth", "rf", "lgbm", "extra_tree"],
-#         ["multiscale"]
-#     ]:
-#
-#         automl = AutoML(
-#             time_budget=60, metric="mape", task="ts_forecast", eval_method="cv"
-#         )
-#
-#         automl.fit(
-#             dataframe=train_df[[time_col] + features + [tgt]],
-#             label=tgt,
-#             period=30,
-#             time_col=time_col,
-#             estimator_list=estimator_list,
-#             verbose=4,
-#         )
-#
-#         pred = automl.predict(val_df)
-#
-#         if isinstance(pred, pd.DataFrame):
-#             pred = pred[tgt]
-#         assert not np.isnan(pred.sum())
-#
-#         import matplotlib.pyplot as plt
-#
-#         plt.figure(figsize=(16, 8), dpi=80)
-#         plt.plot(df.PERIOD, df[tgt])
-#         plt.plot(val_df.PERIOD, pred)
-#         plt.legend(["actual", "predicted"])
-#         plt.show()
-#
-#     print("yahoo!")
+def test_finance_df():
+    df = (
+        pd.read_csv("fincrime_finance_series.csv")
+        .fillna(0.0)
+        .drop(columns=["CASE_DAY"])
+    )
+    df["PERIOD"] = pd.to_datetime(df["PERIOD"])
+
+    def split_by_date(df: pd.DataFrame, dt: datetime.date):
+        dt = datetime.datetime(dt.year, dt.month, dt.day)
+        return df[df.PERIOD <= dt], df[df.PERIOD > dt]
+
+    horizon = 30
+    data_end = datetime.date(2022, 8, 31)
+    train_end = data_end - datetime.timedelta(days=horizon)
+
+    train_df, val_df = split_by_date(df, train_end)
+    from flaml import AutoML
+
+    tgt = "SERIES_FRAUD"
+    time_col = "PERIOD"
+    assert tgt in train_df.columns
+
+    features = []  # c for c in train_df.columns if "SERIES" not in c and c != time_col]
+
+    for estimator_list in [
+        # ["arima", "sarimax"],
+        # ["xgboost", "xgb_limitdepth", "rf", "lgbm", "extra_tree"],
+        ["multiscale"]
+        # ["prophet"]
+    ]:
+
+        automl = AutoML(
+            time_budget=2 * 60, metric="mape", task="ts_forecast", eval_method="cv"
+        )
+
+        automl.fit(
+            dataframe=train_df[[time_col] + features + [tgt]],
+            label=tgt,
+            period=horizon,
+            time_col=time_col,
+            estimator_list=estimator_list,
+            verbose=4,
+            n_splits=4,
+            cv_step_size=11,
+        )
+
+        pred = automl.predict(val_df)
+
+        if isinstance(pred, pd.DataFrame):
+            pred = pred[tgt]
+        assert not np.isnan(pred.sum())
+
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(16, 8), dpi=80)
+        plt.plot(df.PERIOD, df[tgt])
+        plt.plot(val_df.PERIOD, pred)
+        plt.legend(["actual", "predicted"])
+        plt.show()
+
+    print("yahoo!")
 
 
 def get_stalliion_data():

@@ -64,7 +64,7 @@ class GenericTask(Task):
         y_train_all,
         dataframe,
         label,
-        eval_method,
+        # eval_method,
         time_col=None,
         X_val=None,
         y_val=None,

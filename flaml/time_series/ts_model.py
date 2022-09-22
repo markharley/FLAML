@@ -2,6 +2,7 @@ import time
 import logging
 import os
 from datetime import datetime
+import math
 from typing import List, Optional, Union
 
 import pandas as pd
@@ -51,6 +52,24 @@ class TimeSeriesEstimator(SKLearnEstimator):
             }
         )
         return space
+
+    @staticmethod
+    def adjust_scale(scale: int, data_len: int, pred_horizon: int):
+        points = data_len - pred_horizon
+        max_lags = math.floor(points / scale)
+
+        while scale > 2:
+
+            if max_lags >= 2:
+                break
+            scale = math.ceil(scale / 1.7)
+            max_lags = math.floor(points / scale)
+
+        assert (
+            scale >= 2 and max_lags >= 2
+        ), f"Too few points ({data_len}) for prediction horizon {pred_horizon}"
+
+        return scale, max_lags
 
     @classmethod
     def top_level_params(cls):
@@ -264,8 +283,12 @@ class ARIMA(TimeSeriesEstimator):
     """The class for tuning ARIMA."""
 
     @classmethod
-    def _search_space(cls, data: TimeSeriesDataset, **params):
-        scale = data.next_scale()
+    def _search_space(
+        cls, data: TimeSeriesDataset, task: Task, pred_horizon: int, **params
+    ):
+        scale, _ = cls.adjust_scale(
+            data.next_scale(), len(data.train_data), pred_horizon
+        )
         space = {
             "p": {
                 "domain": tune.qrandint(lower=0, upper=2 * scale, q=1),
@@ -390,14 +413,21 @@ class SARIMAX(ARIMA):
     """The class for tuning SARIMA."""
 
     @classmethod
-    def _search_space(cls, data: TimeSeriesDataset, **params):
-        scale = data.next_scale()
-        max_steps = int(len(data.train_data) / scale - 0.5)  # rounding down
+    def _search_space(
+        cls, data: TimeSeriesDataset, task: Task, pred_horizon: int, **params
+    ):
 
-        if max_steps < 4:  # soft fallback if TS too short
-            scale = 1
-            max_steps = int(len(data.train_data) - 0.5)
+        scale, max_lags = cls.adjust_scale(
+            data.next_scale(), len(data.train_data), pred_horizon
+        )
+
         # TODO: instead, downscale the dataset and take next_scale from that for P and Q
+        scales = [
+            s
+            for s in [scale, 2 * scale, 3 * scale, 4 * scale]
+            if s * max_lags <= len(data.train_data) - pred_horizon
+        ]
+
         space = {
             "p": {
                 "domain": tune.qrandint(lower=0, upper=scale - 1, q=1),
@@ -415,7 +445,7 @@ class SARIMAX(ARIMA):
                 "low_cost_init_value": 0,
             },
             "P": {
-                "domain": tune.qrandint(lower=0, upper=min(10, max_steps), q=1),
+                "domain": tune.qrandint(lower=0, upper=min(10, max_lags), q=1),
                 "init_value": 3,
                 "low_cost_init_value": 0,
             },
@@ -425,12 +455,12 @@ class SARIMAX(ARIMA):
                 "low_cost_init_value": 0,
             },
             "Q": {
-                "domain": tune.qrandint(lower=0, upper=min(10, max_steps), q=1),
+                "domain": tune.qrandint(lower=0, upper=min(10, max_lags), q=1),
                 "init_value": 3,
                 "low_cost_init_value": 0,
             },
             "s": {
-                "domain": tune.choice([scale, 2 * scale, 3 * scale, 4 * scale]),
+                "domain": tune.choice(scales),
                 "init_value": scale,
             },
         }
@@ -513,8 +543,13 @@ class TS_SKLearn(TimeSeriesEstimator):
     ):
         data_size = data.train_data.shape
         space = cls.base_class.search_space(data_size=data_size, task=task, **params)
-        scale = data.next_scale()
-        max_lags = max(scale, int(np.sqrt(data_size[0])))
+
+        scale, _ = cls.adjust_scale(
+            data.next_scale(), len(data.train_data), pred_horizon
+        )
+
+        max_lags = max(2 * scale, int(np.sqrt(data_size[0])))
+        max_lags = min(max_lags, data_size[0] - pred_horizon - 1)
 
         space.update(
             {
@@ -525,7 +560,7 @@ class TS_SKLearn(TimeSeriesEstimator):
                 },
                 "lags": {
                     "domain": tune.randint(lower=1, upper=max_lags),
-                    "init_value": scale,
+                    "init_value": min(max_lags, scale),
                 },
             }
         )
