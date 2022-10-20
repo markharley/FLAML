@@ -478,10 +478,11 @@ def test_finance_df():
     train_df, val_df = split_by_date(df, train_end)
     from flaml import AutoML
 
-    tgt = "SERIES_FRAUD"
+    # tgt = "SERIES_FRAUD"
+    # assert tgt in train_df.columns
     time_col = "PERIOD"
-    assert tgt in train_df.columns
 
+    tgts = [c for c in train_df.columns if "SERIES" in c]
     features = []  # c for c in train_df.columns if "SERIES" not in c and c != time_col]
 
     for estimator_list in [

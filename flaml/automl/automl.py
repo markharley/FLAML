@@ -1544,6 +1544,7 @@ class AutoML(BaseEstimator):
 
         # task = self.task
         self._state.task = self.task
+        self._state.fit_kwargs = fit_kwargs
 
         # TODO: remove duplicate task at self and self._state
         # self.__dict__.pop("task")  # cleanup

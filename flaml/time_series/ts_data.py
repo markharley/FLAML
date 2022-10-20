@@ -146,12 +146,12 @@ class TimeSeriesDataset:
         else:
             return both[len(self.train_data) :]
 
-    def unique_dimension_values(self) -> np.ndarray:
-        # this is the same set for train and test data, by construction
-        return self.combine_dims(self.train_data).unique()
-
-    def combine_dims(self, df):
-        return df.apply(lambda row: tuple([row[d] for d in self.dimensions]), axis=1)
+    # def unique_dimension_values(self) -> np.ndarray:
+    #     # this is the same set for train and test data, by construction
+    #     return self.combine_dims(self.train_data).unique()
+    #
+    # def combine_dims(self, df):
+    #     return df.apply(lambda row: tuple([row[d] for d in self.dimensions]), axis=1)
 
     def to_univariate(self) -> Dict[str, "TimeSeriesDataset"]:
         """
