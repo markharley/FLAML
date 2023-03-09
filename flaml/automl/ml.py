@@ -5,6 +5,8 @@
 import time
 import numpy as np
 import pandas as pd
+from typing import Union, Callable, TypeVar, Optional, Tuple
+
 from sklearn.metrics import (
     mean_squared_error,
     r2_score,
@@ -45,10 +47,14 @@ from flaml.automl.model import (
     TemporalFusionTransformerEstimator,
     TransformersEstimatorModelSelection,
 )
-from flaml.automl.data import CLASSIFICATION, group_counts, TS_FORECAST
+from flaml.automl.data import group_counts
+from flaml.automl.task.task import TS_FORECAST, Task
+from flaml.automl.model import BaseEstimator
+
 import logging
 
 logger = logging.getLogger(__name__)
+EstimatorSubclass = TypeVar("EstimatorSubclass", bound=BaseEstimator)
 
 sklearn_metric_name_set = {
     "r2",
@@ -101,7 +107,12 @@ huggingface_metric_to_mode = {
 huggingface_submetric_to_metric = {"rouge1": "rouge", "rouge2": "rouge"}
 
 
-def get_estimator_class(task, estimator_name):
+def get_estimator_class(task: str, estimator_name: str) -> EstimatorSubclass:
+    """Given a task and an estimator name, return the relevant flaml-wrapped estimator class
+
+    NOTE: See why the return type is declarad by using TypeVar here on the mypy doc
+    https://mypy.readthedocs.io/en/stable/kinds_of_types.html#the-type-of-class-objects
+    """
     # when adding a new learner, need to add an elif branch
     if "xgboost" == estimator_name:
         estimator_class = XGBoost_TS if task in TS_FORECAST else XGBoostSklearnEstimator
@@ -144,7 +155,7 @@ def get_estimator_class(task, estimator_name):
 
 
 def metric_loss_score(
-    metric_name,
+    metric_name: str,
     y_processed_predict,
     y_processed_true,
     labels=None,
@@ -198,11 +209,11 @@ def metric_loss_score(
         except ImportError:
             raise ValueError(
                 metric_name
-                + " is not an built-in sklearn metric and nlp is not installed. "
+                + " is not an built-in sklearn metric and [hf] is not installed. "
                 "Currently built-in sklearn metrics are: "
                 "r2, rmse, mae, mse, accuracy, roc_auc, roc_auc_ovr, roc_auc_ovo,"
                 "log_loss, mape, f1, micro_f1, macro_f1, ap. "
-                "If the metric is an nlp metric, please pip install flaml[nlp] ",
+                "If the metric is a huggingface metric, please pip install flaml[hf] ",
                 "or pass a customized metric function to AutoML.fit(metric=func)",
             )
         # If the metric is not found from huggingface dataset metric list (i.e., FileNotFoundError)
@@ -223,11 +234,11 @@ def metric_loss_score(
             return score
 
 
-def is_in_sklearn_metric_name_set(metric_name):
+def is_in_sklearn_metric_name_set(metric_name: str):
     return metric_name.startswith("ndcg") or metric_name in sklearn_metric_name_set
 
 
-def is_min_metric(metric_name):
+def is_min_metric(metric_name: str):
     return (
         metric_name in ["rmse", "mae", "mse", "log_loss", "mape"]
         or huggingface_metric_to_mode.get(metric_name, None) == "min"
@@ -235,7 +246,7 @@ def is_min_metric(metric_name):
 
 
 def sklearn_metric_loss_score(
-    metric_name,
+    metric_name: str,
     y_predict,
     y_true,
     labels=None,
@@ -345,8 +356,8 @@ def sklearn_metric_loss_score(
     return score
 
 
-def get_y_pred(estimator, X, eval_metric, obj):
-    if eval_metric in ["roc_auc", "ap", "roc_auc_weighted"] and "binary" in obj:
+def get_y_pred(estimator, X, eval_metric, task: Task):
+    if eval_metric in ["roc_auc", "ap", "roc_auc_weighted"] and task.is_binary():
         y_pred_classes = estimator.predict_proba(X)
         y_pred = y_pred_classes[:, 1] if y_pred_classes.ndim > 1 else y_pred_classes
     elif eval_metric in [
@@ -372,15 +383,17 @@ def _eval_estimator(
     y_val,
     weight_val,
     groups_val,
-    eval_metric,
-    obj,
+    eval_metric: Union[str, Callable],
+    task,
     labels=None,
     log_training_metric=False,
-    fit_kwargs={},
+    fit_kwargs: Optional[dict] = None,
 ):
+    if fit_kwargs is None:
+        fit_kwargs = {}
     if isinstance(eval_metric, str):
         pred_start = time.time()
-        val_pred_y = get_y_pred(estimator, X_val, eval_metric, obj)
+        val_pred_y = get_y_pred(estimator, X_val, eval_metric, task)
         pred_time = (time.time() - pred_start) / X_val.shape[0]
 
         val_loss = metric_loss_score(
@@ -393,7 +406,7 @@ def _eval_estimator(
         )
         metric_for_logging = {"pred_time": pred_time}
         if log_training_metric:
-            train_pred_y = get_y_pred(estimator, X_train, eval_metric, obj)
+            train_pred_y = get_y_pred(estimator, X_train, eval_metric, task)
             metric_for_logging["train_loss"] = metric_loss_score(
                 eval_metric,
                 train_pred_y,
@@ -424,22 +437,23 @@ def _eval_estimator(
 
 def get_val_loss(
     config,
-    estimator,
+    estimator: EstimatorSubclass,
     X_train,
     y_train,
     X_val,
     y_val,
     weight_val,
     groups_val,
-    eval_metric,
+    eval_metric: Union[str, Callable],
     obj,
     labels=None,
     budget=None,
     log_training_metric=False,
-    fit_kwargs={},
+    fit_kwargs: Optional[dict] = None,
     free_mem_ratio=0,
 ):
-
+    if fit_kwargs is None:
+        fit_kwargs = {}
     start = time.time()
     # if groups_val is not None:
     #     fit_kwargs['groups_val'] = groups_val
@@ -487,118 +501,6 @@ def default_cv_score_agg_func(val_loss_folds, log_metrics_folds):
     return metric_to_minimize, metrics_to_log
 
 
-def evaluate_model_CV(
-    config,
-    estimator,
-    X_train_all,
-    y_train_all,
-    budget,
-    kf,
-    task,
-    eval_metric,
-    best_val_loss,
-    cv_score_agg_func=None,
-    log_training_metric=False,
-    fit_kwargs={},
-    free_mem_ratio=0,
-):
-    if cv_score_agg_func is None:
-        cv_score_agg_func = default_cv_score_agg_func
-    start_time = time.time()
-    val_loss_folds = []
-    log_metric_folds = []
-    metric = None
-    train_time = pred_time = 0
-    total_fold_num = 0
-    n = kf.get_n_splits()
-    X_train_split, y_train_split = X_train_all, y_train_all
-    if task in CLASSIFICATION:
-        labels = np.unique(y_train_all)
-    else:
-        labels = fit_kwargs.get(
-            "label_list"
-        )  # pass the label list on to compute the evaluation metric
-    groups = None
-    shuffle = getattr(kf, "shuffle", task not in TS_FORECAST)
-    if isinstance(kf, RepeatedStratifiedKFold):
-        kf = kf.split(X_train_split, y_train_split)
-    elif isinstance(kf, (GroupKFold, StratifiedGroupKFold)):
-        groups = kf.groups
-        kf = kf.split(X_train_split, y_train_split, groups)
-        shuffle = False
-    elif isinstance(kf, TimeSeriesSplit):
-        kf = kf.split(X_train_split, y_train_split)
-    else:
-        kf = kf.split(X_train_split)
-    rng = np.random.RandomState(2020)
-    budget_per_train = budget and budget / n
-    if "sample_weight" in fit_kwargs:
-        weight = fit_kwargs["sample_weight"]
-        weight_val = None
-    else:
-        weight = weight_val = None
-    for train_index, val_index in kf:
-        if shuffle:
-            train_index = rng.permutation(train_index)
-        if isinstance(X_train_all, pd.DataFrame):
-            X_train = X_train_split.iloc[train_index]
-            X_val = X_train_split.iloc[val_index]
-        else:
-            X_train, X_val = X_train_split[train_index], X_train_split[val_index]
-        y_train, y_val = y_train_split[train_index], y_train_split[val_index]
-        estimator.cleanup()
-        if weight is not None:
-            fit_kwargs["sample_weight"], weight_val = (
-                weight[train_index],
-                weight[val_index],
-            )
-        if groups is not None:
-            fit_kwargs["groups"] = (
-                groups[train_index]
-                if isinstance(groups, np.ndarray)
-                else groups.iloc[train_index]
-            )
-            groups_val = (
-                groups[val_index]
-                if isinstance(groups, np.ndarray)
-                else groups.iloc[val_index]
-            )
-        else:
-            groups_val = None
-        val_loss_i, metric_i, train_time_i, pred_time_i = get_val_loss(
-            config,
-            estimator,
-            X_train,
-            y_train,
-            X_val,
-            y_val,
-            weight_val,
-            groups_val,
-            eval_metric,
-            task,
-            labels,
-            budget_per_train,
-            log_training_metric=log_training_metric,
-            fit_kwargs=fit_kwargs,
-            free_mem_ratio=free_mem_ratio,
-        )
-        if isinstance(metric_i, dict) and "intermediate_results" in metric_i.keys():
-            del metric_i["intermediate_results"]
-        if weight is not None:
-            fit_kwargs["sample_weight"] = weight
-        total_fold_num += 1
-        val_loss_folds.append(val_loss_i)
-        log_metric_folds.append(metric_i)
-        train_time += train_time_i
-        pred_time += pred_time_i
-        if budget and time.time() - start_time >= budget:
-            break
-    val_loss, metric = cv_score_agg_func(val_loss_folds, log_metric_folds)
-    n = total_fold_num
-    pred_time /= n
-    return val_loss, metric, train_time, pred_time
-
-
 def compute_estimator(
     X_train,
     y_train,
@@ -608,19 +510,24 @@ def compute_estimator(
     groups_val,
     budget,
     kf,
-    config_dic,
-    task,
-    estimator_name,
-    eval_method,
-    eval_metric,
+    config_dic: dict,
+    task: str,
+    estimator_name: str,
+    eval_method: str,
+    eval_metric: Union[str, Callable],
     best_val_loss=np.Inf,
-    n_jobs=1,
-    estimator_class=None,
-    cv_score_agg_func=None,
-    log_training_metric=False,
-    fit_kwargs={},
+    n_jobs: Optional[
+        int
+    ] = 1,  # some estimators of EstimatorSubclass don't accept n_jobs. Should be None in that case.
+    estimator_class: Optional[EstimatorSubclass] = None,
+    cv_score_agg_func: Optional[callable] = None,
+    log_training_metric: Optional[bool] = False,
+    fit_kwargs: Optional[dict] = None,
     free_mem_ratio=0,
 ):
+    if not fit_kwargs:
+        fit_kwargs = {}
+
     estimator_class = estimator_class or get_estimator_class(task, estimator_name)
     estimator = estimator_class(
         **config_dic,
@@ -655,14 +562,13 @@ def compute_estimator(
             free_mem_ratio=0,
         )
     else:
-        val_loss, metric_for_logging, train_time, pred_time = evaluate_model_CV(
+        val_loss, metric_for_logging, train_time, pred_time = task.evaluate_model_CV(
             config_dic,
             estimator,
             X_train,
             y_train,
             budget,
             kf,
-            task,
             eval_metric,
             best_val_loss,
             cv_score_agg_func,
@@ -678,18 +584,20 @@ def compute_estimator(
 
 
 def train_estimator(
-    config_dic,
+    config_dic: dict,
     X_train,
     y_train,
-    task,
-    estimator_name,
-    n_jobs=1,
-    estimator_class=None,
+    task: str,
+    estimator_name: str,
+    n_jobs: Optional[
+        int
+    ] = 1,  # some estimators of EstimatorSubclass don't accept n_jobs. Should be None in that case.
+    estimator_class: Optional[EstimatorSubclass] = None,
     budget=None,
-    fit_kwargs={},
+    fit_kwargs: Optional[dict] = None,
     eval_metric=None,
     free_mem_ratio=0,
-):
+) -> Tuple[EstimatorSubclass, float]:
     start_time = time.time()
     estimator_class = estimator_class or get_estimator_class(task, estimator_name)
     estimator = estimator_class(
@@ -697,6 +605,9 @@ def train_estimator(
         task=task,
         n_jobs=n_jobs,
     )
+    if not fit_kwargs:
+        fit_kwargs = {}
+
     if isinstance(estimator, TransformersEstimator):
         fit_kwargs["metric"] = eval_metric
 
@@ -710,15 +621,9 @@ def train_estimator(
     return estimator, train_time
 
 
-def get_classification_objective(num_labels: int) -> str:
-    if num_labels == 2:
-        objective_name = "binary"
-    else:
-        objective_name = "multiclass"
-    return objective_name
-
-
-def norm_confusion_matrix(y_true, y_pred):
+def norm_confusion_matrix(
+    y_true: Union[np.array, pd.Series], y_pred: Union[np.array, pd.Series]
+):
     """normalized confusion matrix.
 
     Args:
@@ -736,7 +641,11 @@ def norm_confusion_matrix(y_true, y_pred):
     return norm_conf_mat
 
 
-def multi_class_curves(y_true, y_pred_proba, curve_func):
+def multi_class_curves(
+    y_true: Union[np.array, pd.Series],
+    y_pred_proba: Union[np.array, pd.Series],
+    curve_func: Callable,
+):
     """Binarize the data for multi-class tasks and produce ROC or precision-recall curves.
 
     Args:

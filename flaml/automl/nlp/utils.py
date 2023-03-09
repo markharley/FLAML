@@ -1,7 +1,7 @@
 from typing import Dict, Any
 import numpy as np
 
-from flaml.automl.data import (
+from flaml.automl.task.task import (
     SUMMARIZATION,
     SEQREGRESSION,
     SEQCLASSIFICATION,
@@ -11,7 +11,6 @@ from flaml.automl.data import (
 
 
 def load_default_huggingface_metric_for_task(task):
-
     if task == SEQCLASSIFICATION:
         return "accuracy"
     elif task == SEQREGRESSION:

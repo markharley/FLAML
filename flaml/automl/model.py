@@ -22,11 +22,13 @@ import math
 from flaml import tune
 from flaml.automl.data import (
     group_counts,
-    CLASSIFICATION,
     add_time_idx_col,
-    TS_FORECASTREGRESSION,
     TS_TIMESTAMP_COL,
     TS_VALUE_COL,
+)
+from flaml.automl.task.task import (
+    CLASSIFICATION,
+    TS_FORECASTREGRESSION,
     SEQCLASSIFICATION,
     SEQREGRESSION,
     TOKENCLASSIFICATION,
@@ -175,7 +177,6 @@ class BaseEstimator:
         return X
 
     def _fit(self, X_train, y_train, **kwargs):
-
         current_time = time.time()
         if "groups" in kwargs:
             kwargs = kwargs.copy()
@@ -447,7 +448,7 @@ class TransformersEstimator(BaseEstimator):
     def _set_training_args(self, **kwargs):
         from .nlp.utils import date_str, Counter
 
-        for (key, val) in kwargs.items():
+        for key, val in kwargs.items():
             assert key not in self.params, (
                 "Since {} is in the search space, it cannot exist in 'custom_fit_kwargs' at the same time."
                 "If you need to fix the value of {} to {}, the only way is to add a single-value domain in the search "
@@ -568,9 +569,14 @@ class TransformersEstimator(BaseEstimator):
 
     @property
     def data_collator(self):
-        from .nlp.huggingface.data_collator import task_to_datacollator_class
+        from flaml.automl.task.task import Task
+        from flaml.automl.nlp.huggingface.data_collator import (
+            task_to_datacollator_class,
+        )
 
-        data_collator_class = task_to_datacollator_class.get(self._task)
+        data_collator_class = task_to_datacollator_class.get(
+            self._task.name if isinstance(self._task, Task) else self._task
+        )
 
         if data_collator_class:
             kwargs = {
@@ -1487,8 +1493,12 @@ class ExtraTreesEstimator(RandomForestEstimator):
         return 1.9
 
     def __init__(self, task="binary", **params):
+        if isinstance(task, str):
+            from flaml.automl.task.factory import task_factory
+
+            task = task_factory(task)
         super().__init__(task, **params)
-        if "regression" in task:
+        if task.is_regression():
             self.estimator_class = ExtraTreesRegressor
         else:
             self.estimator_class = ExtraTreesClassifier
@@ -2123,11 +2133,7 @@ class TS_SKLearn(SKLearnEstimator):
                         X.iloc[:i, :]
                     )
                     preds.append(self._model[i - 1].predict(X_pred, **kwargs)[-1])
-                forecast = DataFrame(
-                    data=np.asarray(preds).reshape(-1, 1),
-                    columns=[self.hcrystaball_model.name],
-                    index=X.index,
-                )
+                forecast = Series(preds)
             else:
                 (
                     X_pred,
