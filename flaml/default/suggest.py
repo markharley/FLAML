@@ -1,19 +1,21 @@
 import numpy as np
-from sklearn.neighbors import NearestNeighbors
 import logging
 import pathlib
 import json
-from flaml.automl.data import CLASSIFICATION, DataTransformer
-from flaml.automl.ml import get_estimator_class, get_classification_objective
+from flaml.automl.data import DataTransformer
+from flaml.automl.task.task import CLASSIFICATION, get_classification_objective
+from flaml.automl.task.generic_task import len_labels
+from flaml.automl.task.factory import task_factory
 from flaml.version import __version__
+
+try:
+    from sklearn.neighbors import NearestNeighbors
+except ImportError:
+    pass
 
 LOCATION = pathlib.Path(__file__).parent.resolve()
 logger = logging.getLogger(__name__)
 CONFIG_PREDICTORS = {}
-
-
-def version_parse(version):
-    return tuple(map(int, (version.split("."))))
 
 
 def meta_feature(task, X_train, y_train, meta_feature_names):
@@ -28,12 +30,12 @@ def meta_feature(task, X_train, y_train, meta_feature_names):
         elif each_feature_name == "NumberOfFeatures":
             this_feature.append(n_feat)
         elif each_feature_name == "NumberOfClasses":
-            this_feature.append(len(np.unique(y_train)) if is_classification else 0)
+            this_feature.append(len_labels(y_train) if is_classification else 0)
         elif each_feature_name == "PercentageOfNumericFeatures":
             try:
-                # this is feature is only supported for dataframe
+                # this feature is only supported for dataframe
                 this_feature.append(
-                    X_train.select_dtypes(include=np.number).shape[1] / n_feat
+                    X_train.select_dtypes(include=[np.number, "float", "int", "long"]).shape[1] / n_feat
                 )
             except AttributeError:
                 # 'numpy.ndarray' object has no attribute 'select_dtypes'
@@ -45,6 +47,7 @@ def meta_feature(task, X_train, y_train, meta_feature_names):
 
 
 def load_config_predictor(estimator_name, task, location=None):
+    task = str(task)
     key = f"{location}/{estimator_name}/{task}"
     predictor = CONFIG_PREDICTORS.get(key)
     if predictor:
@@ -55,23 +58,27 @@ def load_config_predictor(estimator_name, task, location=None):
         with open(f"{location}/{estimator_name}/{task}.json", "r") as f:
             CONFIG_PREDICTORS[key] = predictor = json.load(f)
     except FileNotFoundError:
-        raise FileNotFoundError(
-            f"Portfolio has not been built for {estimator_name} on {task} task."
-        )
+        raise FileNotFoundError(f"Portfolio has not been built for {estimator_name} on {task} task.")
     return predictor
 
 
-def suggest_config(task, X, y, estimator_or_predictor, location=None, k=None):
+def suggest_config(
+    task,
+    X,
+    y,
+    estimator_or_predictor,
+    location=None,
+    k=None,
+    meta_feature_fn=meta_feature,
+):
     """Suggest a list of configs for the given task and training data.
 
     The returned configs can be used as starting points for AutoML.fit().
     `FLAML_sample_size` is removed from the configs.
     """
-    task = (
-        get_classification_objective(len(np.unique(y)))
-        if task == "classification"
-        else task
-    )
+    from packaging.version import parse as version_parse
+
+    task = get_classification_objective(len_labels(y)) if task == "classification" and y is not None else task
     predictor = (
         load_config_predictor(estimator_or_predictor, task, location)
         if isinstance(estimator_or_predictor, str)
@@ -80,15 +87,9 @@ def suggest_config(task, X, y, estimator_or_predictor, location=None, k=None):
 
     older_version = "1.0.2"
     # TODO: update older_version when the newer code can no longer handle the older version json file
-    assert (
-        version_parse(__version__)
-        >= version_parse(predictor["version"])
-        >= version_parse(older_version)
-    )
+    assert version_parse(__version__) >= version_parse(predictor["version"]) >= version_parse(older_version)
     prep = predictor["preprocessing"]
-    feature = meta_feature(
-        task, X_train=X, y_train=y, meta_feature_names=predictor["meta_feature_names"]
-    )
+    feature = meta_feature_fn(task, X_train=X, y_train=y, meta_feature_names=predictor["meta_feature_names"])
     feature = (np.array(feature) - np.array(prep["center"])) / np.array(prep["scale"])
     neighbors = predictor["neighbors"]
     nn = NearestNeighbors(n_neighbors=1)
@@ -99,15 +100,14 @@ def suggest_config(task, X, y, estimator_or_predictor, location=None, k=None):
     choice = neighbors[ind]["choice"] if k is None else neighbors[ind]["choice"][:k]
     configs = [predictor["portfolio"][x] for x in choice]
     for config in configs:
-        hyperparams = config["hyperparameters"]
-        if hyperparams and "FLAML_sample_size" in hyperparams:
-            hyperparams.pop("FLAML_sample_size")
+        if "hyperparameters" in config:
+            hyperparams = config["hyperparameters"]
+            if hyperparams and "FLAML_sample_size" in hyperparams:
+                hyperparams.pop("FLAML_sample_size")
     return configs
 
 
-def suggest_learner(
-    task, X, y, estimator_or_predictor="all", estimator_list=None, location=None
-):
+def suggest_learner(task, X, y, estimator_or_predictor="all", estimator_list=None, location=None):
     """Suggest best learner within estimator_list."""
     configs = suggest_config(task, X, y, estimator_or_predictor, location)
     if not estimator_list:
@@ -160,13 +160,12 @@ def suggest_hyperparams(task, X, y, estimator_or_predictor, location=None):
         hyperparams: A dict of the hyperparameter configurations.
         estiamtor_class: A class of the underlying estimator, e.g., lightgbm.LGBMClassifier.
     """
-    config = suggest_config(task, X, y, estimator_or_predictor, location=location, k=1)[
-        0
-    ]
+    config = suggest_config(task, X, y, estimator_or_predictor, location=location, k=1)[0]
     estimator = config["class"]
-    model_class = get_estimator_class(task, estimator)
+    task = task_factory(task)
+    model_class = task.estimator_class_from_str(estimator)
     hyperparams = config["hyperparameters"]
-    model = model_class(task=task, **hyperparams)
+    model = model_class(task=task.name, **hyperparams)
     estimator_class = model.estimator_class
     hyperparams = hyperparams and model.params
     return hyperparams, estimator_class
@@ -246,11 +245,9 @@ def preprocess_and_suggest_hyperparams(
             estimator_list=["xgb_limitdepth", "xgboost"],
             location=location,
         )
-    config = suggest_config(task, X, y, estimator_or_predictor, location=location, k=1)[
-        0
-    ]
+    config = suggest_config(task, X, y, estimator_or_predictor, location=location, k=1)[0]
     estimator = config["class"]
-    model_class = get_estimator_class(task, estimator)
+    model_class = task_factory(task).estimator_class_from_str(estimator)
     hyperparams = config["hyperparameters"]
     model = model_class(task=task, **hyperparams)
     if model.estimator_class is None:

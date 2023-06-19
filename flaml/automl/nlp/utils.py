@@ -1,7 +1,7 @@
 from typing import Dict, Any
 import numpy as np
 
-from flaml.automl.data import (
+from flaml.automl.task.task import (
     SUMMARIZATION,
     SEQREGRESSION,
     SEQCLASSIFICATION,
@@ -11,7 +11,6 @@ from flaml.automl.data import (
 
 
 def load_default_huggingface_metric_for_task(task):
-
     if task == SEQCLASSIFICATION:
         return "accuracy"
     elif task == SEQREGRESSION:
@@ -86,12 +85,8 @@ class Counter:
     @staticmethod
     def get_trial_fold_name(local_dir, trial_config, trial_id):
         Counter.counter += 1
-        experiment_tag = "{0}_{1}".format(
-            str(Counter.counter), format_vars(trial_config)
-        )
-        logdir = get_logdir_name(
-            _generate_dirname(experiment_tag, trial_id=trial_id), local_dir
-        )
+        experiment_tag = "{0}_{1}".format(str(Counter.counter), format_vars(trial_config))
+        logdir = get_logdir_name(_generate_dirname(experiment_tag, trial_id=trial_id), local_dir)
         return logdir
 
 
@@ -100,15 +95,11 @@ class LabelEncoderforTokenClassification:
         # if the labels are tokens, convert them to ids
         if any(isinstance(id, str) for id in y[0]):
             self.label_list = sorted(list(set().union(*y)))
-            self._tokenlabel_to_id = {
-                self.label_list[id]: id for id in range(len(self.label_list))
-            }
+            self._tokenlabel_to_id = {self.label_list[id]: id for id in range(len(self.label_list))}
             y = y.apply(lambda sent: [self._tokenlabel_to_id[token] for token in sent])
         # if the labels are not tokens, they must be ids
         else:
-            assert all(
-                isinstance(id, (int, np.integer)) for id in y[0]
-            ), "The labels must either be tokens or ids"
+            assert all(isinstance(id, (int, np.integer)) for id in y[0]), "The labels must either be tokens or ids"
         return y
 
     def transform(self, y):

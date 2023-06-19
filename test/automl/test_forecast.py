@@ -1,19 +1,19 @@
+import datetime
+
 import numpy as np
+import pandas as pd
+
 from flaml import AutoML
 
+from flaml.automl.task.time_series_task import TimeSeriesTask
 
-def test_forecast_automl(budget=5):
+
+def test_forecast_automl(budget=10, estimators_when_no_prophet=["arima", "sarimax", "holt-winters"]):
     # using dataframe
     import statsmodels.api as sm
 
     data = sm.datasets.co2.load_pandas().data["co2"].resample("MS").mean()
-    data = (
-        data.bfill()
-        .ffill()
-        .to_frame()
-        .reset_index()
-        .rename(columns={"index": "ds", "co2": "y"})
-    )
+    data = data.bfill().ffill().to_frame().reset_index().rename(columns={"index": "ds", "co2": "y"})
     num_samples = data.shape[0]
     time_horizon = 12
     split_idx = num_samples - time_horizon
@@ -39,7 +39,7 @@ def test_forecast_automl(budget=5):
         automl.fit(
             dataframe=df,
             **settings,
-            estimator_list=["arima", "sarimax"],
+            estimator_list=estimators_when_no_prophet,
             period=time_horizon,
         )
     """ retrieve best config and best learner"""
@@ -89,9 +89,35 @@ def test_forecast_automl(budget=5):
             X_train=X_train,
             y_train=y_train,
             **settings,
-            estimator_list=["arima", "sarimax"],
+            estimator_list=estimators_when_no_prophet,
             period=time_horizon,
         )
+
+
+def test_models(budget=3):
+    n = 100
+    X = pd.DataFrame(
+        {
+            "A": pd.date_range(start="1900-01-01", periods=n, freq="D"),
+        }
+    )
+    y = np.exp(np.random.randn(n))
+
+    task = TimeSeriesTask("ts_forecast")
+
+    for est in task.estimators.keys():
+        if est == "tft":
+            continue  # TFT is covered by its own test
+        automl = AutoML()
+        automl.fit(
+            X_train=X[:72],  # a single column of timestamp
+            y_train=y[:72],  # value for each timestamp
+            estimator_list=[est],
+            period=12,  # time horizon to forecast, e.g., 12 months
+            task="ts_forecast",
+            time_budget=budget,  # time budget in seconds
+        )
+        automl.predict(X[72:])
 
 
 def test_numpy():
@@ -161,7 +187,7 @@ def load_multi_dataset():
     return df
 
 
-def test_multivariate_forecast_num(budget=5):
+def test_multivariate_forecast_num(budget=5, estimators_when_no_prophet=["arima", "sarimax", "holt-winters"]):
     df = load_multi_dataset()
     # split data into train and test
     time_horizon = 180
@@ -193,7 +219,7 @@ def test_multivariate_forecast_num(budget=5):
         automl.fit(
             dataframe=train_df,
             **settings,
-            estimator_list=["arima", "sarimax"],
+            estimator_list=estimators_when_no_prophet,
             period=time_horizon,
         )
     """ retrieve best config and best learner"""
@@ -278,9 +304,7 @@ def load_multi_dataset_cat(time_horizon):
             return 0
 
     df["season"] = df["timeStamp"].apply(season)
-    df["above_monthly_avg"] = df.apply(
-        lambda x: above_monthly_avg(x["timeStamp"], x["temp"]), axis=1
-    )
+    df["above_monthly_avg"] = df.apply(lambda x: above_monthly_avg(x["timeStamp"], x["temp"]), axis=1)
 
     # split data into train and test
     num_samples = df.shape[0]
@@ -293,7 +317,7 @@ def load_multi_dataset_cat(time_horizon):
     return train_df, test_df
 
 
-def test_multivariate_forecast_cat(budget=5):
+def test_multivariate_forecast_cat(budget=5, estimators_when_no_prophet=["arima", "sarimax", "holt-winters"]):
     time_horizon = 180
     train_df, test_df = load_multi_dataset_cat(time_horizon)
     X_test = test_df[
@@ -320,7 +344,7 @@ def test_multivariate_forecast_cat(budget=5):
         automl.fit(
             dataframe=train_df,
             **settings,
-            estimator_list=["arima", "sarimax"],
+            estimator_list=estimators_when_no_prophet,
             period=time_horizon,
         )
     """ retrieve best config and best learner"""
@@ -450,16 +474,10 @@ def get_stalliion_data():
     data["time_idx"] = data["date"].dt.year * 12 + data["date"].dt.month
     data["time_idx"] -= data["time_idx"].min()
     # add additional features
-    data["month"] = data.date.dt.month.astype(str).astype(
-        "category"
-    )  # categories have be strings
+    data["month"] = data.date.dt.month.astype(str).astype("category")  # categories have be strings
     data["log_volume"] = np.log(data.volume + 1e-8)
-    data["avg_volume_by_sku"] = data.groupby(
-        ["time_idx", "sku"], observed=True
-    ).volume.transform("mean")
-    data["avg_volume_by_agency"] = data.groupby(
-        ["time_idx", "agency"], observed=True
-    ).volume.transform("mean")
+    data["avg_volume_by_sku"] = data.groupby(["time_idx", "sku"], observed=True).volume.transform("mean")
+    data["avg_volume_by_agency"] = data.groupby(["time_idx", "agency"], observed=True).volume.transform("mean")
     # we want to encode special days as one variable and thus need to first reverse one-hot encoding
     special_days = [
         "easter_day",
@@ -473,11 +491,7 @@ def get_stalliion_data():
         "beer_capital",
         "music_fest",
     ]
-    data[special_days] = (
-        data[special_days]
-        .apply(lambda x: x.map({0: "-", 1: x.name}))
-        .astype("category")
-    )
+    data[special_days] = data[special_days].apply(lambda x: x.map({0: "-", 1: x.name})).astype("category")
     return data, special_days
 
 
@@ -518,7 +532,7 @@ def test_forecast_panel(budget=5):
             ],
             "time_varying_unknown_categoricals": [],
             "time_varying_unknown_reals": [
-                "y",  # always need a 'y' column for the target column
+                "volume",  # target column
                 "log_volume",
                 "industry_volume",
                 "soda_volume",
@@ -565,8 +579,7 @@ def test_forecast_panel(budget=5):
 
         y_test, y_pred = np.array(y_test), np.array(y_pred)
         return round(
-            np.mean(np.abs(y_pred - y_test) / ((np.abs(y_pred) + np.abs(y_test)) / 2))
-            * 100,
+            np.mean(np.abs(y_pred - y_test) / ((np.abs(y_pred) + np.abs(y_test)) / 2)) * 100,
             2,
         )
 
@@ -591,10 +604,69 @@ def test_forecast_panel(budget=5):
     print(automl.min_resource)
 
 
+def test_cv_step():
+    n = 300
+    time_col = "date"
+    df = pd.DataFrame(
+        {
+            time_col: pd.date_range(start="1/1/2001", periods=n, freq="D"),
+            "y": np.sin(np.linspace(start=0, stop=200, num=n)),
+        }
+    )
+
+    def split_by_date(df: pd.DataFrame, dt: datetime.date):
+        dt = datetime.datetime(dt.year, dt.month, dt.day)
+        return df[df[time_col] <= dt], df[df[time_col] > dt]
+
+    horizon = 60
+    data_end = df.date.max()
+    train_end = data_end - datetime.timedelta(days=horizon)
+
+    train_df, val_df = split_by_date(df, train_end)
+    from flaml import AutoML
+
+    tgts = ["y"]
+    # tgt = "SERIES_SANCTIONS"
+
+    preds = {}
+    for tgt in tgts:
+        features = []  # [c for c in train_df.columns if "SERIES" not in c and c != time_col]
+
+        automl = AutoML(time_budget=5, metric="mae", task="ts_forecast", eval_method="cv")
+
+        automl.fit(
+            dataframe=train_df[[time_col] + features + [tgt]],
+            label=tgt,
+            period=horizon,
+            time_col=time_col,
+            verbose=4,
+            n_splits=5,
+            cv_step_size=5,
+        )
+
+        pred = automl.predict(val_df)
+
+        if isinstance(pred, pd.DataFrame):
+            pred = pred[tgt]
+        assert not np.isnan(pred.sum())
+
+        import matplotlib.pyplot as plt
+
+        preds[tgt] = pred
+        # plt.figure(figsize=(16, 8), dpi=80)
+        # plt.plot(df[time_col], df[tgt])
+        # plt.plot(val_df[time_col], pred)
+        # plt.legend(["actual", "predicted"])
+        # plt.show()
+
+    print("yahoo!")
+
+
 if __name__ == "__main__":
-    test_forecast_automl(60)
-    test_multivariate_forecast_num(5)
-    test_multivariate_forecast_cat(5)
-    test_numpy()
-    test_forecast_classification(5)
+    # test_forecast_automl(60)
+    # test_multivariate_forecast_num(5)
+    # test_multivariate_forecast_cat(5)
+    # test_numpy()
+    # test_forecast_classification(5)
     test_forecast_panel(5)
+    # test_cv_step()

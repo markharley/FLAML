@@ -3,63 +3,25 @@
 #  * Licensed under the MIT License. See LICENSE file in the
 #  * project root for license information.
 import numpy as np
-from scipy.sparse import vstack, issparse
-import pandas as pd
-from pandas import DataFrame, Series
-
-from flaml.automl.training_log import training_log_reader
-
 from datetime import datetime
-from typing import Union
+from typing import TYPE_CHECKING, Union
+import os
+from flaml.automl.training_log import training_log_reader
+from flaml.automl.spark import ps, psDataFrame, psSeries, DataFrame, Series, pd
 
-# TODO: if your task is not specified in here, define your task as an all-capitalized word
-SEQCLASSIFICATION = "seq-classification"
-MULTICHOICECLASSIFICATION = "multichoice-classification"
-TOKENCLASSIFICATION = "token-classification"
-CLASSIFICATION = (
-    "binary",
-    "multiclass",
-    "classification",
-    SEQCLASSIFICATION,
-    MULTICHOICECLASSIFICATION,
-    TOKENCLASSIFICATION,
-)
-SEQREGRESSION = "seq-regression"
-REGRESSION = ("regression", SEQREGRESSION)
-TS_FORECASTREGRESSION = (
-    "forecast",
-    "ts_forecast",
-    "ts_forecast_regression",
-)
-TS_FORECASTCLASSIFICATION = "ts_forecast_classification"
-TS_FORECASTPANEL = "ts_forecast_panel"
-TS_FORECAST = (
-    *TS_FORECASTREGRESSION,
-    TS_FORECASTCLASSIFICATION,
-    TS_FORECASTPANEL,
-)
+try:
+    from scipy.sparse import vstack, issparse
+except ImportError:
+    pass
+
+if TYPE_CHECKING:
+    from flaml.automl.task import Task
+
 TS_TIMESTAMP_COL = "ds"
 TS_VALUE_COL = "y"
-SUMMARIZATION = "summarization"
-NLG_TASKS = (SUMMARIZATION,)
-NLU_TASKS = (
-    SEQREGRESSION,
-    SEQCLASSIFICATION,
-    MULTICHOICECLASSIFICATION,
-    TOKENCLASSIFICATION,
-)
 
 
-def _is_nlp_task(task):
-    if task in NLU_TASKS or task in NLG_TASKS:
-        return True
-    else:
-        return False
-
-
-def load_openml_dataset(
-    dataset_id, data_dir=None, random_state=0, dataset_format="dataframe"
-):
+def load_openml_dataset(dataset_id, data_dir=None, random_state=0, dataset_format="dataframe"):
     """Load dataset from open ML.
 
     If the file is not cached locally, download it from open ML.
@@ -79,7 +41,6 @@ def load_openml_dataset(
         y_train: A series or array of labels for training data.
         y_test:  A series or array of labels for test data.
     """
-    import os
     import openml
     import pickle
     from sklearn.model_selection import train_test_split
@@ -99,9 +60,7 @@ def load_openml_dataset(
             pickle.dump(dataset, f, pickle.HIGHEST_PROTOCOL)
     print("Dataset name:", dataset.name)
     try:
-        X, y, *__ = dataset.get_data(
-            target=dataset.default_target_attribute, dataset_format=dataset_format
-        )
+        X, y, *__ = dataset.get_data(target=dataset.default_target_attribute, dataset_format=dataset_format)
     except ValueError:
         from sklearn.datasets import fetch_openml
 
@@ -134,7 +93,6 @@ def load_openml_task(task_id, data_dir):
         y_train: A series of labels for training data.
         y_test:  A series of labels for test data.
     """
-    import os
     import openml
     import pickle
 
@@ -236,11 +194,27 @@ def get_output_from_log(filename, time_budget):
 
 def concat(X1, X2):
     """concatenate two matrices vertically."""
+    if type(X1) != type(X2):
+        if isinstance(X2, (psDataFrame, psSeries)):
+            X1 = ps.from_pandas(pd.DataFrame(X1))
+        elif isinstance(X1, (psDataFrame, psSeries)):
+            X2 = ps.from_pandas(pd.DataFrame(X2))
+        else:
+            X1 = pd.DataFrame(X1)
+            X2 = pd.DataFrame(X2)
+
     if isinstance(X1, (DataFrame, Series)):
         df = pd.concat([X1, X2], sort=False)
         df.reset_index(drop=True, inplace=True)
         if isinstance(X1, DataFrame):
             cat_columns = X1.select_dtypes(include="category").columns
+            if len(cat_columns):
+                df[cat_columns] = df[cat_columns].astype("category")
+        return df
+    if isinstance(X1, (psDataFrame, psSeries)):
+        df = ps.concat([X1, X2], ignore_index=True)
+        if isinstance(X1, psDataFrame):
+            cat_columns = X1.select_dtypes(include="category").columns.values.tolist()
             if len(cat_columns):
                 df[cat_columns] = df[cat_columns].astype("category")
         return df
@@ -273,20 +247,24 @@ def add_time_idx_col(X):
 class DataTransformer:
     """Transform input training data."""
 
-    def fit_transform(self, X: Union[DataFrame, np.array], y, task):
+    def fit_transform(self, X: Union[DataFrame, np.ndarray], y, task: Union[str, "Task"]):
         """Fit transformer and process the input training data according to the task type.
 
         Args:
             X: A numpy array or a pandas dataframe of training data.
             y: A numpy array or a pandas series of labels.
-            task: A string of the task type, e.g.,
-                'classification', 'regression', 'ts_forecast', 'rank'.
+            task: An instance of type Task, or a str such as 'classification', 'regression'.
 
         Returns:
             X: Processed numpy array or pandas dataframe of training data.
             y: Processed numpy array or pandas series of labels.
         """
-        if _is_nlp_task(task):
+        if isinstance(task, str):
+            from flaml.automl.task.factory import task_factory
+
+            task = task_factory(task, X, y)
+
+        if task.is_nlp():
             # if the mode is NLP, check the type of input, each column must be either string or
             # ids (input ids, token type id, attention mask, etc.)
             str_columns = []
@@ -301,9 +279,9 @@ class DataTransformer:
             n = X.shape[0]
             cat_columns, num_columns, datetime_columns = [], [], []
             drop = False
-            if task in TS_FORECAST:
+            if task.is_ts_forecast():
                 X = X.rename(columns={X.columns[0]: TS_TIMESTAMP_COL})
-                if task is TS_FORECASTPANEL:
+                if task.is_ts_forecastpanel():
                     if "time_idx" not in X:
                         X = add_time_idx_col(X)
                 ds_col = X.pop(TS_TIMESTAMP_COL)
@@ -312,21 +290,13 @@ class DataTransformer:
             for column in X.columns:
                 # sklearn\utils\validation.py needs int/float values
                 if X[column].dtype.name in ("object", "category"):
-                    if (
-                        X[column].nunique() == 1
-                        or X[column].nunique(dropna=True)
-                        == n - X[column].isnull().sum()
-                    ):
+                    if X[column].nunique() == 1 or X[column].nunique(dropna=True) == n - X[column].isnull().sum():
                         X.drop(columns=column, inplace=True)
                         drop = True
                     elif X[column].dtype.name == "category":
                         current_categories = X[column].cat.categories
                         if "__NAN__" not in current_categories:
-                            X[column] = (
-                                X[column]
-                                .cat.add_categories("__NAN__")
-                                .fillna("__NAN__")
-                            )
+                            X[column] = X[column].cat.add_categories("__NAN__").fillna("__NAN__")
                         cat_columns.append(column)
                     else:
                         X[column] = X[column].fillna("__NAN__")
@@ -349,10 +319,7 @@ class DataTransformer:
                             f"quarter_{column}": tmp_dt.quarter,
                         }
                         for key, value in new_columns_dict.items():
-                            if (
-                                key not in X.columns
-                                and value.nunique(dropna=False) >= 2
-                            ):
+                            if key not in X.columns and value.nunique(dropna=False) >= 2:
                                 X[key] = value
                                 num_columns.append(key)
                         X[column] = X[column].map(datetime.toordinal)
@@ -361,16 +328,14 @@ class DataTransformer:
                     X[column] = X[column].fillna(np.nan)
                     num_columns.append(column)
             X = X[cat_columns + num_columns]
-            if task in TS_FORECAST:
+            if task.is_ts_forecast():
                 X.insert(0, TS_TIMESTAMP_COL, ds_col)
             if cat_columns:
                 X[cat_columns] = X[cat_columns].astype("category")
             if num_columns:
                 X_num = X[num_columns]
                 if np.issubdtype(X_num.columns.dtype, np.integer) and (
-                    drop
-                    or min(X_num.columns) != 0
-                    or max(X_num.columns) != X_num.shape[1] - 1
+                    drop or min(X_num.columns) != 0 or max(X_num.columns) != X_num.shape[1] - 1
                 ):
                     X_num.columns = range(X_num.shape[1])
                     drop = True
@@ -395,12 +360,8 @@ class DataTransformer:
                 datetime_columns,
             )
             self._drop = drop
-        if (
-            task in CLASSIFICATION
-            or not pd.api.types.is_numeric_dtype(y)
-            and task not in NLG_TASKS
-        ):
-            if task != TOKENCLASSIFICATION:
+        if task.is_classification() or not pd.api.types.is_numeric_dtype(y) and not task.is_nlg():
+            if not task.is_token_classification():
                 from sklearn.preprocessing import LabelEncoder
 
                 self.label_transformer = LabelEncoder()
@@ -409,7 +370,6 @@ class DataTransformer:
 
                 self.label_transformer = LabelEncoderforTokenClassification()
             y = self.label_transformer.fit_transform(y)
-
         else:
             self.label_transformer = None
         self._task = task
@@ -426,7 +386,7 @@ class DataTransformer:
         """
         X = X.copy()
 
-        if _is_nlp_task(self._task):
+        if self._task.is_nlp():
             # if the mode is NLP, check the type of input, each column must be either string or
             # ids (input ids, token type id, attention mask, etc.)
             if len(self._str_columns) > 0:
@@ -437,7 +397,7 @@ class DataTransformer:
                 self._num_columns,
                 self._datetime_columns,
             )
-            if self._task in TS_FORECAST:
+            if self._task.is_ts_forecast():
                 X = X.rename(columns={X.columns[0]: TS_TIMESTAMP_COL})
                 ds_col = X.pop(TS_TIMESTAMP_COL)
             for column in datetime_columns:
@@ -459,7 +419,7 @@ class DataTransformer:
                 X[column] = X[column].map(datetime.toordinal)
                 del tmp_dt
             X = X[cat_columns + num_columns].copy()
-            if self._task in TS_FORECAST:
+            if self._task.is_ts_forecast():
                 X.insert(0, TS_TIMESTAMP_COL, ds_col)
             for column in cat_columns:
                 if X[column].dtype.name == "object":
@@ -467,9 +427,7 @@ class DataTransformer:
                 elif X[column].dtype.name == "category":
                     current_categories = X[column].cat.categories
                     if "__NAN__" not in current_categories:
-                        X[column] = (
-                            X[column].cat.add_categories("__NAN__").fillna("__NAN__")
-                        )
+                        X[column] = X[column].cat.add_categories("__NAN__").fillna("__NAN__")
             if cat_columns:
                 X[cat_columns] = X[cat_columns].astype("category")
             if num_columns:

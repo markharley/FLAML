@@ -314,8 +314,7 @@ def get_toy_data_multiplechoiceclassification():
             " its false bottom. He stands and looks around, his eyes",
         ],
         "sent1": [
-            "Someone leans out of the drive - thru "
-            "window, grinning at her, holding bags filled with fast food.",
+            "Someone leans out of the drive - thru " "window, grinning at her, holding bags filled with fast food.",
             "Someone looks up suddenly when he hears.",
             "Someone drives; someone sits beside her.",
             "He opens the drawer in which we know"
@@ -343,8 +342,7 @@ def get_toy_data_multiplechoiceclassification():
         "ending2": [
             "attempts to block her ransacked.",
             "talks using the phone and walks away for a few seconds.",
-            "are too involved with each other to "
-            "notice someone watching them from the drive - thru window.",
+            "are too involved with each other to " "notice someone watching them from the drive - thru window.",
             "finally landing on: the digicam and a stack of cassettes on a shelf.",
         ],
         "ending3": [
@@ -1574,7 +1572,6 @@ def get_toy_data_tokenclassification_tokenlabel():
 
 
 def get_automl_settings(estimator_name="transformer"):
-
     automl_settings = {
         "gpu_per_trial": 0,
         "max_iter": 3,
